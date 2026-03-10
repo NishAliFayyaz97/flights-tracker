@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="Flight Tracker"/>
+  <meta name="theme-color" content="#0a0f1e"/>
+  <link rel="manifest" href="/manifest.json"/>
+  <link rel="apple-touch-icon" href="/icon-192.png"/>
+  <title>✈️ Nish's Flight Tracker</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0a0f1e; color: #e8eaf0; font-family: 'Segoe UI', system-ui, sans-serif; }
+    #root { min-height: 100vh; }
+    @keyframes sp { to { transform: rotate(360deg); } }
+    .week-btn:hover { background: rgba(99,102,241,0.15) !important; border-color: rgba(99,102,241,0.4) !important; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="text/babel" data-presets="react">
+
+const { useState, useEffect, useRef } = React;
+
+const ROUTES = [
+  { id: "bhd_gla", label: "BHD → GLA", from: "BHD", to: "GLA", fromCity: "Belfast City", toCity: "Glasgow", day: "Wednesday", depTime: "10:10", airline: "Aer Lingus", flightNo: "EI3743", accent: "#00B2A9", hasEJPlus: false },
+  { id: "gla_bfs", label: "GLA → BFS", from: "GLA", to: "BFS", fromCity: "Glasgow", toCity: "Belfast Intl", day: "Friday", depTime: "19:50", airline: "easyJet", flightNo: "U2476", accent: "#FF6600", hasEJPlus: true },
+];
+
+const AMEX_MULTIPLIER = 3;
+
+const getDayDate = (dayName, weekOffset = 0) => {
+  const days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  const today = new Date();
+  let diff = days.indexOf(dayName) - today.getDay();
+  if (diff <= 0) diff += 7;
+  const d = new Date(today);
+  d.setDate(today.getDate() + diff + weekOffset * 7);
+  return d;
+};
+
+const fmtDisplay = d => d.toLocaleDateString("en-GB", { weekday:"short", day:"numeric", month:"short" });
+const fmtKey = d => d.toISOString().slice(0,10);
+const nowTime = () => new Date().toLocaleTimeString("en-GB", { hour:"2-digit", minute:"2-digit" });
+const daysUntil = dk => {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const target = new Date(dk); target.setHours(0,0,0,0);
+  return Math.round((target - today) / 86400000);
+};
+
+// Storage using localStorage for PWA
+const storage = {
+  get: (key) => { try { const v = localStorage.getItem(key); return v ? { value: v } : null; } catch { return null; } },
+  set: (key, value) => { try { localStorage.setItem(key, value); } catch {} },
+};
+
+function Spin() {
+  return <span style={{display:"inline-block",width:11,height:11,border:"2px solid rgba(255,255,255,0.3)",borderTopColor:"#fff",borderRadius:"50%",animation:"sp 0.7s linear infinite"}}/>;
+}
+
+function Sparkline({ entries, accent }) {
+  if (!entries || entries.length < 2) return null;
+  const prices = entries.map(e => e.price);
+  const min = Math.min(...prices), max = Math.max(...prices), range = max - min || 1;
+  const w = 120, h = 36, pad = 4;
+  const pts = prices.map((p, i) => {
+    const x = pad + (i / (prices.length - 1)) * (w - pad * 2);
+    const y = h - pad - ((p - min) / range) * (h - pad * 2);
+    return `${x},${y}`;
+  });
+  const last = pts[pts.length-1].split(",");
+  const first = pts[0].split(",");
+  const avg = Math.round(prices.reduce((a,b) => a+b, 0) / prices.length);
+  const trending = prices[prices.length-1] > prices[0];
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+      <svg width={w} height={h} style={{overflow:"visible"}}>
+        <polyline points={pts.join(" ")} fill="none" stroke={accent} strokeWidth="1.5" strokeLinejoin="round" opacity="0.7"/>
+        <circle cx={last[0]} cy={last[1]} r="3" fill={accent}/>
+        <circle cx={first[0]} cy={first[1]} r="2" fill="rgba(255,255,255,0.3)"/>
+      </svg>
+      <div style={{fontSize:10,color:"#64748b",lineHeight:1.6}}>
+        <div>Avg: <strong style={{color:"#94a3b8"}}>£{avg}</strong></div>
+        <div>Low: <strong style={{color:"#10b981"}}>£{min}</strong> High: <strong style={{color:"#ef4444"}}>£{max}</strong></div>
+        <div style={{color:trending?"#ef4444":"#10b981"}}>{trending?"↑ trending up":"↓ trending down"}</div>
+      </div>
+    </div>
+  );
+}
+
+function Tile({ label, value, sub, green, red, onClick }) {
+  const border = green ? "rgba(16,185,129,0.35)" : red ? "rgba(239,68,68,0.35)" : "rgba(255,255,255,0.08)";
+  const bg = green ? "rgba(16,185,129,0.12)" : red ? "rgba(239,68,68,0.08)" : "rgba(255,255,255,0.04)";
+  const col = green ? "#10b981" : red ? "#ef4444" : "#e2e8f0";
+  return (
+    <div onClick={onClick} style={{background:bg,border:`1px solid ${border}`,borderRadius:10,padding:"10px 12px",cursor:onClick?"pointer":"default",userSelect:"none"}}>
+      <div style={{fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:1,marginBottom:3}}>{label}</div>
+      <div style={{fontSize:18,fontWeight:800,color:col}}>{value}</div>
+      <div style={{fontSize:10,color:"#475569",marginTop:2}}>{sub}</div>
+    </div>
+  );
+}
+
+function PriceInput({ onAdd, onClose }) {
+  const [val, setVal] = useState("");
+  return (
+    <div style={{display:"flex",gap:8,marginBottom:10}}>
+      <input type="number" value={val} onChange={ev => setVal(ev.target.value)} placeholder="Enter current price £" autoFocus style={{flex:1,background:"#0f172a",border:"1px solid rgba(99,102,241,0.5)",borderRadius:8,padding:"8px 12px",color:"white",fontSize:14}}/>
+      <button onClick={() => { if(val){ onAdd(Number(val)); setVal(""); }}} style={{background:"#6366f1",border:"none",borderRadius:8,padding:"8px 16px",color:"white",fontWeight:700,cursor:"pointer"}}>Add</button>
+      <button onClick={onClose} style={{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,padding:"8px 10px",color:"#94a3b8",cursor:"pointer"}}>✕</button>
+    </div>
+  );
+}
+
+function BookedInput({ bp, hasEJPlus, onSave, onReset, onClose }) {
+  const [val, setVal] = useState(bp != null ? bp.toString() : "");
+  return (
+    <div style={{marginBottom:10}}>
+      {hasEJPlus && <div style={{background:"rgba(255,102,0,0.1)",border:"1px solid rgba(255,102,0,0.25)",borderRadius:8,padding:"8px 12px",fontSize:11,color:"#fdba74",marginBottom:8}}>easyJet+ — enter what you paid. If price drops you can claim a voucher.</div>}
+      <div style={{display:"flex",gap:8}}>
+        <input type="number" value={val} onChange={ev => setVal(ev.target.value)} placeholder="Price you paid £" autoFocus style={{flex:1,background:"#0f172a",border:"1px solid rgba(255,255,255,0.15)",borderRadius:8,padding:"8px 12px",color:"white",fontSize:14}}/>
+        <button onClick={() => { if(val) onSave(Number(val)); }} style={{background:"#6366f1",border:"none",borderRadius:8,padding:"8px 16px",color:"white",fontWeight:700,cursor:"pointer"}}>Save</button>
+        {bp != null && <button onClick={onReset} style={{background:"rgba(239,68,68,0.1)",border:"1px solid rgba(239,68,68,0.3)",borderRadius:8,padding:"8px 12px",color:"#f87171",fontWeight:700,fontSize:12,cursor:"pointer"}}>Reset</button>}
+        <button onClick={onClose} style={{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,padding:"8px 10px",color:"#94a3b8",cursor:"pointer"}}>✕</button>
+      </div>
+    </div>
+  );
+}
+
+function BookingRefInput({ bk, bookingRefs, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(bookingRefs[bk] || "");
+  const ref = bookingRefs[bk];
+  return (
+    <div style={{marginTop:8}}>
+      {!editing && !ref && (
+        <button onClick={() => setEditing(true)} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:7,padding:"5px 10px",color:"#475569",fontSize:10,fontWeight:600,cursor:"pointer"}}>+ Add booking ref</button>
+      )}
+      {!editing && ref && (
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          <span style={{fontSize:10,color:"#64748b"}}>Ref:</span>
+          <span style={{fontSize:11,fontWeight:700,color:"#94a3b8",letterSpacing:"0.5px"}}>{ref}</span>
+          <button onClick={() => navigator.clipboard.writeText(ref).catch(() => {})} style={{background:"rgba(99,102,241,0.15)",border:"1px solid rgba(99,102,241,0.25)",borderRadius:5,padding:"2px 8px",color:"#a5b4fc",fontSize:10,fontWeight:600,cursor:"pointer"}}>📋 Copy</button>
+          <button onClick={() => { setEditing(true); setVal(ref); }} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:5,padding:"2px 6px",color:"#475569",fontSize:10,cursor:"pointer"}}>✏️</button>
+        </div>
+      )}
+      {editing && (
+        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          <input value={val} onChange={ev => setVal(ev.target.value)} placeholder="e.g. ABC1234" autoFocus style={{flex:1,background:"#0f172a",border:"1px solid rgba(99,102,241,0.4)",borderRadius:7,padding:"6px 10px",color:"white",fontSize:12,textTransform:"uppercase"}} onKeyDown={ev => { if(ev.key === "Enter" && val){ onSave(bk, val.toUpperCase()); setEditing(false); }}}/>
+          <button onClick={() => { if(val){ onSave(bk, val.toUpperCase()); setEditing(false); }}} style={{background:"#6366f1",border:"none",borderRadius:7,padding:"6px 12px",color:"white",fontWeight:700,fontSize:11,cursor:"pointer"}}>Save</button>
+          <button onClick={() => setEditing(false)} style={{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:7,padding:"6px 8px",color:"#94a3b8",fontSize:11,cursor:"pointer"}}>✕</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EvidenceUpload({ bk }) {
+  const [imgs, setImgs] = useState([]);
+  const [dragging, setDragging] = useState(false);
+  const handleFiles = files => {
+    Array.from(files).forEach(f => {
+      if (!f.type.startsWith("image/")) return;
+      const r = new FileReader();
+      r.onload = ev => setImgs(prev => [...prev, { src: ev.target.result, name: f.name, time: nowTime() }]);
+      r.readAsDataURL(f);
+    });
+  };
+  return (
+    <div style={{marginTop:10}}>
+      <div onDragOver={ev => { ev.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={ev => { ev.preventDefault(); setDragging(false); handleFiles(ev.dataTransfer.files); }} onClick={() => document.getElementById(`ev_${bk}`).click()} style={{border:`2px dashed ${dragging ? "#10b981" : "rgba(16,185,129,0.25)"}`,borderRadius:8,padding:"10px",textAlign:"center",background:dragging ? "rgba(16,185,129,0.08)" : "rgba(0,0,0,0.2)",cursor:"pointer"}}>
+        <input id={`ev_${bk}`} type="file" accept="image/*" multiple style={{display:"none"}} onChange={ev => handleFiles(ev.target.files)}/>
+        <div style={{fontSize:18,marginBottom:2}}>📎</div>
+        <div style={{fontSize:11,color:"#64748b"}}>Add screenshot evidence</div>
+        <div style={{fontSize:10,color:"#475569"}}>tap or drag & drop</div>
+      </div>
+      {imgs.length > 0 && (
+        <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:8}}>
+          {imgs.map((img, i) => (
+            <div key={i} style={{position:"relative",borderRadius:8,overflow:"hidden",border:"1px solid rgba(16,185,129,0.3)"}}>
+              <img src={img.src} alt={img.name} style={{width:72,height:72,objectFit:"cover",display:"block"}}/>
+              <div style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,0.7)",fontSize:9,color:"#94a3b8",padding:"2px 4px",textAlign:"center"}}>{img.time}</div>
+              <button onClick={() => setImgs(prev => prev.filter((_,j) => j !== i))} style={{position:"absolute",top:2,right:2,background:"rgba(0,0,0,0.7)",border:"none",borderRadius:"50%",width:16,height:16,color:"white",fontSize:10,cursor:"pointer",lineHeight:"16px",padding:0}}>✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TripSummary({ weekOffset, history, booked, claimed, archived }) {
+  const out = ROUTES[0], inb = ROUTES[1];
+  const dOut = getDayDate(out.day, weekOffset), dIn = getDayDate(inb.day, weekOffset);
+  const dkOut = fmtKey(dOut), dkIn = fmtKey(dIn);
+  const bkOut = `${out.id}_${dkOut}`, bkIn = `${inb.id}_${dkIn}`;
+  if (archived[bkOut] && archived[bkIn]) return null;
+  const bpOut = booked[bkOut] != null ? booked[bkOut] : null;
+  const bpIn = booked[bkIn] != null ? booked[bkIn] : null;
+  if (bpOut === null && bpIn === null) return null;
+  const total = (bpOut || 0) + (bpIn || 0);
+  const miles = Math.round(total * AMEX_MULTIPLIER);
+  const entriesOut = history[out.id]?.[dkOut] || [];
+  const entriesIn = history[inb.id]?.[dkIn] || [];
+  const curOut = entriesOut.length ? entriesOut[entriesOut.length-1].price : null;
+  const curIn = entriesIn.length ? entriesIn[entriesIn.length-1].price : null;
+  const vOut = bpOut && curOut && (curOut-bpOut) < 0 && out.hasEJPlus && !claimed[bkOut] ? Math.abs(curOut-bpOut) : 0;
+  const vIn = bpIn && curIn && (curIn-bpIn) < 0 && inb.hasEJPlus && !claimed[bkIn] ? Math.abs(curIn-bpIn) : 0;
+  const totalV = vOut + vIn;
+  const net = total - totalV;
+  const days = daysUntil(dkOut);
+  const daysColor = days <= 1 ? "#ef4444" : days <= 3 ? "#f59e0b" : "#6366f1";
+  const daysLabel = days < 0 ? "Past" : days === 0 ? "This week" : days === 1 ? "Tomorrow" : `${days} days`;
+  return (
+    <div style={{background:"linear-gradient(135deg,#1e1b4b,#0f172a)",border:"1px solid rgba(99,102,241,0.25)",borderRadius:16,overflow:"hidden"}}>
+      <div style={{height:3,background:"linear-gradient(90deg,#00B2A9,#6366f1,#FF6600)"}}/>
+      <div style={{padding:"14px 16px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+          <div>
+            <div style={{fontSize:10,color:"#6366f1",textTransform:"uppercase",letterSpacing:1,fontWeight:700,marginBottom:3}}>Trip summary</div>
+            <div style={{fontWeight:800,fontSize:16}}>BHD → GLA → BFS</div>
+            <div style={{fontSize:11,color:"#64748b"}}>{fmtDisplay(dOut)} → {fmtDisplay(dIn)}</div>
+          </div>
+          <div style={{background:`${daysColor}22`,border:`1px solid ${daysColor}44`,borderRadius:8,padding:"4px 10px",fontSize:11,fontWeight:700,color:daysColor}}>{daysLabel}</div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:10}}>
+          {[
+            {label:"Total booked", value:`£${total}`, color:"#e2e8f0"},
+            {label:"Amex miles", value:miles.toLocaleString(), color:"#f59e0b"},
+            {label:"Vouchers", value:totalV ? `£${totalV}` : "—", color:"#10b981"},
+            {label:"Net cost", value:`£${net}`, color: net < total ? "#10b981" : "#e2e8f0"},
+          ].map((s,i) => (
+            <div key={i} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:10,padding:"9px 10px"}}>
+              <div style={{fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:1,marginBottom:3}}>{s.label}</div>
+              <div style={{fontSize:15,fontWeight:800,color:s.color}}>{s.value}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:4}}>
+          {[{label:"BHD→GLA",price:bpOut,airline:out.airline},{label:"GLA→BFS",price:bpIn,airline:inb.airline}].map((leg,i) => (
+            <div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#64748b",padding:"4px 0",borderBottom:"1px solid rgba(255,255,255,0.04)"}}>
+              <span>{leg.label} · {leg.airline}</span>
+              <span style={{color:"#94a3b8",fontWeight:600}}>{leg.price != null ? `£${leg.price}` : "not set"}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Card({ route, weekOffset, history, booked, claimed, archived, bookingRefs, onAdd, onBooked, onClaim, onArchive, onBookingRef, showToast }) {
+  const d = getDayDate(route.day, weekOffset);
+  const dk = fmtKey(d);
+  const bk = `${route.id}_${dk}`;
+  const entries = history[route.id]?.[dk] || [];
+  const cur = entries.length ? entries[entries.length-1].price : null;
+  const low = entries.length ? Math.min(...entries.map(e => e.price)) : null;
+  const bp = booked[bk] != null ? booked[bk] : null;
+  const diff = bp != null && cur != null ? cur - bp : null;
+  const dropped = diff != null && diff < 0;
+  const rose = diff != null && diff > 0;
+  const isClaimed = claimed[bk] || false;
+  const isArchived = archived[bk] || false;
+  const days = daysUntil(dk);
+  const [panel, setPanel] = useState(null);
+  if (isArchived) return null;
+  const daysColor = days <= 1 ? "#ef4444" : days <= 3 ? "#f59e0b" : days <= 7 ? "#fb923c" : "#64748b";
+  const daysLabel = days < 0 ? "Past" : days === 0 ? "Today!" : days === 1 ? "Tomorrow" : `${days} days`;
+  return (
+    <div style={{background:"linear-gradient(135deg,#1e293b,#0f172a)",border:`1px solid ${dropped && !isClaimed ? "rgba(16,185,129,0.4)" : rose ? "rgba(239,68,68,0.3)" : "rgba(255,255,255,0.08)"}`,borderRadius:16,overflow:"hidden"}}>
+      <div style={{height:3,background:`linear-gradient(90deg,${route.accent},transparent)`}}/>
+      <div style={{padding:"16px 16px 14px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+          <div>
+            <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:5}}>
+              <span style={{background:route.accent+"22",color:route.accent,borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700}}>{route.airline}</span>
+              <span style={{color:"#475569",fontSize:11}}>{route.flightNo}</span>
+              {route.hasEJPlus && <span style={{background:"rgba(255,102,0,0.15)",color:"#fb923c",borderRadius:6,padding:"2px 7px",fontSize:10,fontWeight:600}}>easyJet+ ✓</span>}
+            </div>
+            <div style={{fontSize:22,fontWeight:800,letterSpacing:"-0.5px"}}>{route.from} <span style={{color:"#334155",fontWeight:300}}>→</span> {route.to}</div>
+            <div style={{fontSize:11,color:"#64748b"}}>{route.fromCity} → {route.toCity}</div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:11,color:"#64748b"}}>{route.day}</div>
+            <div style={{fontWeight:700,fontSize:13}}>{fmtDisplay(d)}</div>
+            <div style={{color:route.accent,fontWeight:700,fontSize:13}}>{route.depTime}</div>
+            <div style={{marginTop:4,background:`${daysColor}22`,border:`1px solid ${daysColor}44`,borderRadius:6,padding:"2px 8px",fontSize:10,fontWeight:700,color:daysColor,display:"inline-block"}}>{daysLabel}</div>
+          </div>
+        </div>
+        {bp === null && days > 0 && (
+          <div style={{background:"rgba(245,158,11,0.1)",border:"1px solid rgba(245,158,11,0.25)",borderRadius:8,padding:"7px 12px",fontSize:11,color:"#fbbf24",marginBottom:10}}>
+            ⚠️ No booked price set — tap "You booked" to add one
+          </div>
+        )}
+        <Sparkline entries={entries} accent={route.accent}/>
+        {low != null && low < (cur || 9999) && (
+          <div style={{fontSize:11,color:"#64748b",marginBottom:8}}>Lowest seen: <strong style={{color:"#94a3b8"}}>£{low}</strong></div>
+        )}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10}}>
+          <Tile label="Current price" value={cur ? `£${cur}` : "—"} sub={entries.length ? `${entries.length} check${entries.length > 1 ? "s" : ""}` : "tap to add"} onClick={() => setPanel(p => p === "price" ? null : "price")}/>
+          <Tile label="You booked" value={bp != null ? `£${bp}` : "—"} sub={bp != null ? "tap to edit/reset" : "tap to set"} onClick={() => setPanel(p => p === "booked" ? null : "booked")}/>
+          <Tile label={dropped ? "💸 Save" : rose ? "📈 Increase" : "Difference"} value={diff != null ? (dropped ? `£${Math.abs(diff)}` : diff === 0 ? "Same" : `+£${diff}`) : "—"} sub={dropped ? (isClaimed ? "✅ claimed" : "claim voucher") : rose ? "price rose" : "—"} green={dropped && !isClaimed} red={rose}/>
+        </div>
+        {panel === "price" && (
+          <PriceInput onAdd={price => { onAdd(route.id, dk, { price, time: nowTime(), source:"manual" }); setPanel(null); showToast(`£${price} recorded`); }} onClose={() => setPanel(null)}/>
+        )}
+        {panel === "booked" && (
+          <BookedInput bp={bp} hasEJPlus={route.hasEJPlus} onSave={price => { onBooked(bk, price); setPanel(null); }} onReset={() => { onBooked(bk, null); setPanel(null); }} onClose={() => setPanel(null)}/>
+        )}
+        {dropped && route.hasEJPlus && !isClaimed && (
+          <div style={{marginTop:4,background:"rgba(16,185,129,0.1)",border:"1px solid rgba(16,185,129,0.3)",borderRadius:10,padding:"11px 14px"}}>
+            <div style={{fontWeight:700,color:"#10b981",marginBottom:4}}>✅ Price dropped — easyJet+ voucher available</div>
+            <div style={{fontSize:12,color:"#6ee7b7",lineHeight:1.5,marginBottom:10}}>Fare is £{Math.abs(diff)} cheaper than you paid. Call easyJet to claim your voucher.</div>
+            <div style={{display:"flex",gap:8}}>
+              <a href="tel:03305515151" style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:6,background:"linear-gradient(135deg,#10b981,#059669)",borderRadius:8,padding:"9px 16px",color:"white",fontWeight:700,fontSize:12,textDecoration:"none"}}>📞 Call 0330 551 5151</a>
+              <button onClick={() => onClaim(bk)} style={{background:"rgba(16,185,129,0.15)",border:"1px solid rgba(16,185,129,0.4)",borderRadius:8,padding:"9px 14px",color:"#10b981",fontWeight:700,fontSize:12,cursor:"pointer"}}>Mark claimed ✓</button>
+            </div>
+            <EvidenceUpload bk={bk}/>
+          </div>
+        )}
+        {dropped && route.hasEJPlus && isClaimed && (
+          <div style={{marginTop:4,background:"rgba(100,116,139,0.08)",border:"1px solid rgba(100,116,139,0.2)",borderRadius:10,padding:"10px 14px",fontSize:12,color:"#64748b"}}>✅ Voucher of £{Math.abs(diff)} claimed</div>
+        )}
+        <BookingRefInput bk={bk} bookingRefs={bookingRefs} onSave={onBookingRef}/>
+        <div style={{display:"flex",gap:6,marginTop:12,justifyContent:"flex-end"}}>
+          <button onClick={() => onArchive(bk)} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:7,padding:"5px 10px",color:"#64748b",fontSize:10,fontWeight:600,cursor:"pointer"}}>🗄️ Archive</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function History({ history, onHistoryChange }) {
+  const [open, setOpen] = useState(false);
+  const [editingIdx, setEditingIdx] = useState(null);
+  const [editVal, setEditVal] = useState("");
+  const entries = [];
+  ROUTES.forEach(r => {
+    Object.entries(history[r.id] || {}).forEach(([date, es]) => {
+      es.forEach((e, entryIdx) => entries.push({ ...e, label: r.label, accent: r.accent, date, routeId: r.id, entryIdx }));
+    });
+  });
+  entries.sort((a,b) => b.date.localeCompare(a.date));
+  const handleDelete = entry => {
+    const newArr = (history[entry.routeId][entry.date] || []).filter((_,i) => i !== entry.entryIdx);
+    const newDateMap = { ...history[entry.routeId], [entry.date]: newArr };
+    if (!newArr.length) delete newDateMap[entry.date];
+    onHistoryChange({ ...history, [entry.routeId]: newDateMap });
+  };
+  const handleEdit = entry => {
+    const updated = [...(history[entry.routeId][entry.date] || [])];
+    updated[entry.entryIdx] = { ...updated[entry.entryIdx], price: Number(editVal) };
+    onHistoryChange({ ...history, [entry.routeId]: { ...history[entry.routeId], [entry.date]: updated } });
+    setEditingIdx(null); setEditVal("");
+  };
+  if (!entries.length) return null;
+  return (
+    <div style={{background:"#1e293b",border:"1px solid rgba(255,255,255,0.06)",borderRadius:14,overflow:"hidden"}}>
+      <button onClick={() => setOpen(o => !o)} style={{width:"100%",padding:"13px 18px",background:"none",border:"none",color:"#94a3b8",fontSize:13,fontWeight:600,cursor:"pointer",display:"flex",justifyContent:"space-between"}}>
+        <span>📋 Price history ({entries.length} entries)</span><span>{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div style={{borderTop:"1px solid rgba(255,255,255,0.05)",maxHeight:320,overflowY:"auto"}}>
+          {entries.map((e,i) => (
+            <div key={i} style={{borderBottom:"1px solid rgba(255,255,255,0.03)"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 14px",fontSize:12}}>
+                <div style={{display:"flex",gap:8,alignItems:"center",flex:1,minWidth:0}}>
+                  <span style={{width:6,height:6,borderRadius:"50%",background:e.accent,flexShrink:0,display:"inline-block"}}/>
+                  <span style={{fontWeight:600}}>{e.label}</span>
+                  <span style={{color:"#475569"}}>{e.date}</span>
+                </div>
+                <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                  <span style={{fontWeight:700,color:e.accent}}>£{e.price}</span>
+                  <span style={{color:"#475569",fontSize:10}}>{e.time}</span>
+                  <button onClick={() => { setEditingIdx(editingIdx === i ? null : i); setEditVal(e.price.toString()); }} style={{background:"rgba(99,102,241,0.15)",border:"1px solid rgba(99,102,241,0.3)",borderRadius:5,padding:"2px 8px",color:"#a5b4fc",fontSize:10,cursor:"pointer"}}>✏️</button>
+                  <button onClick={() => handleDelete(e)} style={{background:"rgba(239,68,68,0.1)",border:"1px solid rgba(239,68,68,0.25)",borderRadius:5,padding:"2px 8px",color:"#f87171",fontSize:10,cursor:"pointer"}}>✕</button>
+                </div>
+              </div>
+              {editingIdx === i && (
+                <div style={{display:"flex",gap:8,padding:"6px 14px 10px"}}>
+                  <input type="number" value={editVal} onChange={ev => setEditVal(ev.target.value)} style={{flex:1,background:"#0f172a",border:"1px solid rgba(255,255,255,0.15)",borderRadius:7,padding:"6px 10px",color:"white",fontSize:13}} autoFocus/>
+                  <button onClick={() => handleEdit(e)} style={{background:"#6366f1",border:"none",borderRadius:7,padding:"6px 14px",color:"white",fontWeight:700,fontSize:12,cursor:"pointer"}}>Save</button>
+                  <button onClick={() => setEditingIdx(null)} style={{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:7,padding:"6px 10px",color:"#94a3b8",fontSize:12,cursor:"pointer"}}>Cancel</button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ArchivedFlights({ archived, booked, onUnarchive }) {
+  const [open, setOpen] = useState(false);
+  const items = Object.entries(archived).filter(([,v]) => v);
+  if (!items.length) return null;
+  return (
+    <div style={{background:"#1e293b",border:"1px solid rgba(255,255,255,0.06)",borderRadius:14,overflow:"hidden"}}>
+      <button onClick={() => setOpen(o => !o)} style={{width:"100%",padding:"13px 18px",background:"none",border:"none",color:"#64748b",fontSize:13,fontWeight:600,cursor:"pointer",display:"flex",justifyContent:"space-between"}}>
+        <span>🗄️ Archived flights ({items.length})</span><span>{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div style={{borderTop:"1px solid rgba(255,255,255,0.05)"}}>
+          {items.map(([bk],i) => {
+            const parts = bk.split("_");
+            const date = parts[parts.length-1];
+            const rid = parts.slice(0,-1).join("_");
+            const route = ROUTES.find(r => r.id === rid);
+            const price = booked[bk];
+            return (
+              <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 16px",borderBottom:"1px solid rgba(255,255,255,0.03)",fontSize:12}}>
+                <div>
+                  <div style={{fontWeight:600,color:"#94a3b8"}}>{route ? `${route.from}→${route.to}` : rid} · {date}</div>
+                  {price && <div style={{color:"#475569",fontSize:11}}>Booked at £{price}</div>}
+                </div>
+                <button onClick={() => onUnarchive(bk)} style={{background:"rgba(99,102,241,0.15)",border:"1px solid rgba(99,102,241,0.3)",borderRadius:7,padding:"5px 12px",color:"#a5b4fc",fontSize:11,fontWeight:600,cursor:"pointer"}}>Restore</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Dashboard({ history, booked, claimed }) {
+  let totalSpent = 0, totalVouchers = 0, totalMiles = 0;
+  ROUTES.forEach(r => {
+    Object.entries(booked).forEach(([bk, bp]) => {
+      if (!bk.startsWith(r.id + "_")) return;
+      const dk = bk.replace(r.id + "_", "");
+      totalSpent += bp; totalMiles += Math.round(bp * AMEX_MULTIPLIER);
+      const entries = history[r.id]?.[dk] || [];
+      const cur = entries.length ? entries[entries.length-1].price : null;
+      if (cur != null && r.hasEJPlus && claimed[bk]) { const diff = cur - bp; if (diff < 0) totalVouchers += Math.abs(diff); }
+    });
+  });
+  const stats = [
+    { label:"Total spent", value:`£${totalSpent.toFixed(0)}`, sub:"all booked flights", icon:"💳", color:"#6366f1" },
+    { label:"Voucher credit", value:`£${totalVouchers.toFixed(0)}`, sub:"claimed from easyJet+", icon:"🎟️", color:"#10b981" },
+    { label:"Amex miles", value:totalMiles.toLocaleString(), sub:`${AMEX_MULTIPLIER}x on travel spend`, icon:"✨", color:"#f59e0b" },
+    { label:"Net cost", value:`£${Math.max(0, totalSpent - totalVouchers).toFixed(0)}`, sub:"after vouchers", icon:"📊", color:"#94a3b8" },
+  ];
+  return (
+    <div style={{background:"linear-gradient(135deg,#1e293b,#0f172a)",border:"1px solid rgba(99,102,241,0.2)",borderRadius:16,overflow:"hidden"}}>
+      <div style={{height:3,background:"linear-gradient(90deg,#6366f1,#8b5cf6,transparent)"}}/>
+      <div style={{padding:"14px 16px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
+          <span style={{fontSize:15}}>📊</span>
+          <span style={{fontWeight:700,fontSize:13,color:"#e2e8f0"}}>Dashboard</span>
+          <span style={{fontSize:10,color:"#475569",marginLeft:"auto"}}>Gold Amex · {AMEX_MULTIPLIER}x travel</span>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+          {stats.map((s,i) => (
+            <div key={i} style={{background:"rgba(255,255,255,0.03)",border:`1px solid ${s.color}22`,borderRadius:12,padding:"12px 14px"}}>
+              <div style={{fontSize:18,marginBottom:4}}>{s.icon}</div>
+              <div style={{fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:1,marginBottom:3}}>{s.label}</div>
+              <div style={{fontSize:20,fontWeight:800,color:s.color}}>{s.value}</div>
+              <div style={{fontSize:10,color:"#475569",marginTop:2}}>{s.sub}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Receipts({ booked, showToast }) {
+  const [taxYear, setTaxYear] = useState("2025-26");
+  const TAX_YEARS = ["2024-25","2025-26","2026-27"];
+  const bookedEntries = [];
+  ROUTES.forEach(r => { Object.entries(booked).forEach(([bk,bp]) => { if(!bk.startsWith(r.id+"_")) return; const date = bk.replace(r.id+"_",""); bookedEntries.push({route:r,date,price:bp,bk}); }); });
+  const [tyStart,tyEnd] = taxYear==="2024-25" ? ["2024-04-06","2025-04-05"] : taxYear==="2025-26" ? ["2025-04-06","2026-04-05"] : ["2026-04-06","2027-04-05"];
+  const filtered = bookedEntries.filter(e => e.date >= tyStart && e.date <= tyEnd);
+  const total = filtered.reduce((s,e) => s+e.price, 0);
+  const miles = filtered.reduce((s,e) => s+Math.round(e.price*AMEX_MULTIPLIER), 0);
+  const downloadCSV = () => {
+    const rows = [["NishFayyaz Ltd — Flight Expense Report"],[`Tax Year: ${taxYear}`],[`Generated: ${new Date().toLocaleDateString("en-GB")}`],["Business Use: 100%"],[""],["Date","Route","Airline","Flight No","Departure","Amount (£)","Claimable (£)","Amex Miles (3x)"],...filtered.map(e=>[e.date,`${e.route.from}→${e.route.to}`,e.route.airline,e.route.flightNo,e.route.depTime,e.price.toFixed(2),e.price.toFixed(2),Math.round(e.price*AMEX_MULTIPLIER)]),[""],["TOTAL","","","","",total.toFixed(2),total.toFixed(2),miles]];
+    const csv = rows.map(r => r.map(c => `"${c}"`).join(",")).join("\n");
+    const blob = new Blob([csv],{type:"text/csv"}); const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href=url; a.download=`NishFayyaz_Flights_${taxYear}.csv`; a.click(); URL.revokeObjectURL(url);
+    showToast("CSV downloaded ✅");
+  };
+  const printPDF = () => {
+    const w = window.open("","_blank");
+    w.document.write(`<!DOCTYPE html><html><head><title>NishFayyaz Ltd — Flight Expenses ${taxYear}</title><style>body{font-family:'Segoe UI',sans-serif;color:#1e293b;padding:40px;max-width:800px;margin:0 auto}h1{font-size:22px;margin:0 0 4px}.meta{font-size:13px;color:#64748b;margin-bottom:30px}.badge{display:inline-block;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:3px 10px;font-size:12px;margin-right:8px}table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}th{background:#0f172a;color:white;padding:10px 12px;text-align:left;font-size:12px;font-weight:600}td{padding:9px 12px;border-bottom:1px solid #f1f5f9}.total-row td{font-weight:700;background:#f1f5f9;border-top:2px solid #e2e8f0}.footer{margin-top:40px;font-size:11px;color:#94a3b8;border-top:1px solid #e2e8f0;padding-top:16px}.green{color:#059669;font-weight:600}@media print{button{display:none}}</style></head><body><h1>✈️ NishFayyaz Ltd</h1><div class="meta">Flight Expense Report · Tax Year ${taxYear} · Generated ${new Date().toLocaleDateString("en-GB")}</div><span class="badge">100% Business Use</span><span class="badge">Gold Amex · 3x Miles</span><table><thead><tr><th>Date</th><th>Route</th><th>Airline</th><th>Flight</th><th>Dep.</th><th>Amount</th><th>Claimable</th><th>Miles</th></tr></thead><tbody>${filtered.map(e=>`<tr><td>${e.date}</td><td><strong>${e.route.from} → ${e.route.to}</strong></td><td>${e.route.airline}</td><td>${e.route.flightNo}</td><td>${e.route.depTime}</td><td>£${e.price.toFixed(2)}</td><td class="green">£${e.price.toFixed(2)}</td><td>${Math.round(e.price*AMEX_MULTIPLIER).toLocaleString()}</td></tr>`).join("")}<tr class="total-row"><td colspan="5"><strong>TOTAL</strong></td><td><strong>£${total.toFixed(2)}</strong></td><td class="green"><strong>£${total.toFixed(2)}</strong></td><td><strong>${miles.toLocaleString()}</strong></td></tr></tbody></table><div class="footer">NishFayyaz Ltd · All flights 100% business · Paid via Gold American Express<br>Retain booking confirmation emails as supporting evidence.</div><script>window.print()<\/script></body></html>`);
+    w.document.close();
+  };
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:12}}>
+      <div style={{background:"linear-gradient(135deg,#1e293b,#0f172a)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:16,padding:"16px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14}}>
+          <div><div style={{fontWeight:800,fontSize:15,marginBottom:2}}>🧾 NishFayyaz Ltd</div><div style={{fontSize:11,color:"#64748b"}}>Flight expense report · 100% business · Gold Amex</div></div>
+          <div style={{display:"flex",gap:6}}>{TAX_YEARS.map(y => <button key={y} onClick={() => setTaxYear(y)} style={{padding:"4px 10px",borderRadius:16,fontSize:10,fontWeight:600,border:`1px solid ${taxYear===y?"#6366f1":"rgba(255,255,255,0.1)"}`,background:taxYear===y?"#6366f1":"transparent",color:taxYear===y?"white":"#64748b",cursor:"pointer"}}>{y}</button>)}</div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
+          {[{label:"Total claimable",value:`£${total.toFixed(0)}`,sub:`${filtered.length} flight${filtered.length!==1?"s":""}`,color:"#6366f1"},{label:"Amex miles",value:miles.toLocaleString(),sub:"3x on travel",color:"#f59e0b"},{label:"CT saving ~",value:`£${Math.round(total*0.25).toFixed(0)}`,sub:"at 25% Corp Tax",color:"#10b981"}].map((s,i) => (
+            <div key={i} style={{background:"rgba(0,0,0,0.2)",border:`1px solid ${s.color}22`,borderRadius:10,padding:"10px 12px"}}>
+              <div style={{fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:1,marginBottom:3}}>{s.label}</div>
+              <div style={{fontSize:20,fontWeight:800,color:s.color}}>{s.value}</div>
+              <div style={{fontSize:10,color:"#475569"}}>{s.sub}</div>
+            </div>
+          ))}
+        </div>
+        {filtered.length > 0 ? (
+          <div style={{background:"rgba(0,0,0,0.2)",borderRadius:10,overflow:"hidden",marginBottom:14}}>
+            <div style={{display:"grid",gridTemplateColumns:"90px 1fr 1fr 60px",padding:"7px 12px",borderBottom:"1px solid rgba(255,255,255,0.05)"}}>{["Date","Route","Airline","£"].map(h => <div key={h} style={{fontSize:9,color:"#475569",textTransform:"uppercase",letterSpacing:1}}>{h}</div>)}</div>
+            {filtered.sort((a,b) => a.date.localeCompare(b.date)).map((e,i) => (
+              <div key={i} style={{display:"grid",gridTemplateColumns:"90px 1fr 1fr 60px",padding:"9px 12px",borderBottom:"1px solid rgba(255,255,255,0.03)",fontSize:12}}>
+                <div style={{color:"#64748b"}}>{e.date}</div><div style={{fontWeight:600}}>{e.route.from} → {e.route.to}</div><div style={{color:"#94a3b8"}}>{e.route.airline}</div><div style={{fontWeight:700,color:"#10b981"}}>£{e.price}</div>
+              </div>
+            ))}
+            <div style={{display:"grid",gridTemplateColumns:"90px 1fr 1fr 60px",padding:"9px 12px",background:"rgba(255,255,255,0.03)"}}><div style={{fontSize:11,color:"#64748b",gridColumn:"1/4",fontWeight:600}}>Total</div><div style={{fontWeight:800,color:"#e2e8f0"}}>£{total.toFixed(0)}</div></div>
+          </div>
+        ) : <div style={{textAlign:"center",padding:"20px",fontSize:12,color:"#475569",marginBottom:14}}>No flights recorded for {taxYear} yet.</div>}
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={printPDF} style={{flex:1,background:"linear-gradient(135deg,#6366f1,#8b5cf6)",border:"none",borderRadius:8,padding:"10px",color:"white",fontWeight:700,fontSize:12,cursor:"pointer"}}>🖨️ Print / Save PDF</button>
+          <button onClick={downloadCSV} style={{flex:1,background:"rgba(99,102,241,0.15)",border:"1px solid rgba(99,102,241,0.3)",borderRadius:8,padding:"10px",color:"#a5b4fc",fontWeight:700,fontSize:12,cursor:"pointer"}}>📥 Download CSV</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [history, setHistory] = useState({bhd_gla:{},gla_bfs:{}});
+  const [booked, setBooked] = useState({});
+  const [claimed, setClaimed] = useState({});
+  const [archived, setArchived] = useState({});
+  const [bookingRefs, setBookingRefs] = useState({});
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [toast, setToast] = useState(null);
+  const [activeTab, setActiveTab] = useState("flights");
+
+  const save = (h, b, c, a, br) => {
+    storage.set("nish_h4", JSON.stringify(h));
+    storage.set("nish_b4", JSON.stringify(b));
+    storage.set("nish_c4", JSON.stringify(c));
+    storage.set("nish_a4", JSON.stringify(a));
+    storage.set("nish_br4", JSON.stringify(br));
+  };
+
+  useEffect(() => {
+    try {
+      let mergedH = {bhd_gla:{},gla_bfs:{}}, mergedB = {}, mergedC = {}, mergedA = {}, mergedBR = {};
+      const h = storage.get("nish_h4");
+      const b = storage.get("nish_b4");
+      const c = storage.get("nish_c4");
+      const a = storage.get("nish_a4");
+      const br = storage.get("nish_br4");
+      if (h) { const cur = JSON.parse(h.value); ROUTES.forEach(r => { if(cur[r.id]) mergedH[r.id] = cur[r.id]; }); }
+      if (b) mergedB = JSON.parse(b.value);
+      if (c) mergedC = JSON.parse(c.value);
+      if (a) mergedA = JSON.parse(a.value);
+      if (br) mergedBR = JSON.parse(br.value);
+      setHistory(mergedH); setBooked(mergedB); setClaimed(mergedC); setArchived(mergedA); setBookingRefs(mergedBR);
+    } catch {}
+  }, []);
+
+  const showToast = (msg, type="ok") => { setToast({msg,type}); setTimeout(() => setToast(null), 3000); };
+  const handleAdd = (rid, dk, entry) => { const newH = {...history,[rid]:{...(history[rid]||{}),[dk]:[...(history[rid]?.[dk]||[]),entry]}}; setHistory(newH); save(newH,booked,claimed,archived,bookingRefs); };
+  const handleBooked = (bk, price) => { const newB = {...booked}; if(price===null){delete newB[bk];showToast("Booked price cleared");}else{newB[bk]=price;showToast(`Booked price set: £${price}`);} setBooked(newB); save(history,newB,claimed,archived,bookingRefs); };
+  const handleClaim = bk => { const newC = {...claimed,[bk]:true}; setClaimed(newC); save(history,booked,newC,archived,bookingRefs); showToast("Voucher marked as claimed ✅"); };
+  const handleArchive = bk => { const newA = {...archived,[bk]:true}; setArchived(newA); save(history,booked,claimed,newA,bookingRefs); showToast("Flight archived 🗄️"); };
+  const handleUnarchive = bk => { const newA = {...archived}; delete newA[bk]; setArchived(newA); save(history,booked,claimed,newA,bookingRefs); showToast("Flight restored"); };
+  const handleHistoryChange = (newH) => { setHistory(newH); save(newH,booked,claimed,archived,bookingRefs); showToast("Entry updated"); };
+  const handleBookingRef = (bk, ref) => { const newBR = {...bookingRefs,[bk]:ref}; setBookingRefs(newBR); save(history,booked,claimed,archived,newBR); showToast("Booking ref saved 📋"); };
+
+  const unclaimedCount = ROUTES.reduce((count,r) => {
+    return count + Object.entries(booked).filter(([bk,bp]) => {
+      if(!bk.startsWith(r.id+"_") || !r.hasEJPlus || claimed[bk]) return false;
+      const dk = bk.replace(r.id+"_","");
+      const entries = history[r.id]?.[dk] || [];
+      const cur = entries.length ? entries[entries.length-1].price : null;
+      return cur != null && (cur - bp) < 0;
+    }).length;
+  }, 0);
+
+  const WEEKS = Array.from({length:26}, (_,i) => i);
+
+  return (
+    <div style={{minHeight:"100vh",background:"#0a0f1e",color:"#e8eaf0",fontFamily:"'Segoe UI',system-ui,sans-serif",paddingBottom:"env(safe-area-inset-bottom)"}}>
+      <div style={{background:"linear-gradient(135deg,#0f172a,#1e1b4b 50%,#0f172a)",borderBottom:"1px solid rgba(255,255,255,0.06)",padding:"20px 16px 0",paddingTop:"calc(20px + env(safe-area-inset-top))"}}>
+        <div style={{maxWidth:660,margin:"0 auto"}}>
+          <h1 style={{margin:"0 0 2px",fontSize:20,fontWeight:800,letterSpacing:"-0.5px"}}>✈️ Nish's Flight Tracker</h1>
+          <p style={{margin:"0 0 16px",fontSize:11,color:"#64748b"}}>BHD→GLA · Wed 10:10 · Aer Lingus &nbsp;|&nbsp; GLA→BFS · Fri 19:50 · easyJet</p>
+          <div style={{display:"flex",gap:4}}>
+            {[{id:"flights",label:"✈️ Flights"},{id:"dashboard",label:"📊 Dashboard"},{id:"receipts",label:"🧾 Receipts"}].map(t => (
+              <button key={t.id} onClick={() => setActiveTab(t.id)} style={{padding:"8px 14px",borderRadius:"8px 8px 0 0",fontSize:12,fontWeight:700,border:"1px solid rgba(255,255,255,0.08)",borderBottom:"none",background:activeTab===t.id?"#0a0f1e":"transparent",color:activeTab===t.id?"#e2e8f0":"#64748b",cursor:"pointer",position:"relative",bottom:-1,display:"flex",alignItems:"center",gap:5}}>
+                {t.label}
+                {t.id==="flights" && unclaimedCount > 0 && <span style={{background:"#10b981",color:"white",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center"}}>{unclaimedCount}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div style={{maxWidth:660,margin:"0 auto",padding:"16px",display:"flex",flexDirection:"column",gap:14}}>
+        {activeTab === "flights" && (
+          <>
+            <div style={{background:"#1e293b",border:"1px solid rgba(255,255,255,0.07)",borderRadius:14,padding:"12px 14px"}}>
+              <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Select week</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                {WEEKS.map(i => { const active = weekOffset===i; const dd = getDayDate("Wednesday",i); const label = i===0?"This week":i===1?"Next week":dd.toLocaleDateString("en-GB",{day:"numeric",month:"short"}); return (
+                  <button key={i} className="week-btn" onClick={() => setWeekOffset(i)} style={{padding:"5px 13px",borderRadius:20,fontSize:11,fontWeight:active?700:500,border:`1px solid ${active?"#6366f1":"rgba(255,255,255,0.1)"}`,background:active?"#6366f1":"transparent",color:active?"white":"#94a3b8",cursor:"pointer",whiteSpace:"nowrap"}}>{label}</button>
+                );})}
+              </div>
+            </div>
+            <TripSummary weekOffset={weekOffset} history={history} booked={booked} claimed={claimed} archived={archived}/>
+            {ROUTES.map(r => <Card key={r.id} route={r} weekOffset={weekOffset} history={history} booked={booked} claimed={claimed} archived={archived} bookingRefs={bookingRefs} onAdd={handleAdd} onBooked={handleBooked} onClaim={handleClaim} onArchive={handleArchive} onBookingRef={handleBookingRef} showToast={showToast}/>)}
+            <ArchivedFlights archived={archived} booked={booked} onUnarchive={handleUnarchive}/>
+            <History history={history} onHistoryChange={handleHistoryChange}/>
+          </>
+        )}
+        {activeTab === "dashboard" && <><Dashboard history={history} booked={booked} claimed={claimed}/><History history={history} onHistoryChange={handleHistoryChange}/></>}
+        {activeTab === "receipts" && <Receipts booked={booked} history={history} showToast={showToast}/>}
+      </div>
+      {toast && <div style={{position:"fixed",bottom:"calc(20px + env(safe-area-inset-bottom))",left:"50%",transform:"translateX(-50%)",background:toast.type==="warn"?"#1e3a5f":"#065f46",border:`1px solid ${toast.type==="warn"?"#3b82f6":"#10b981"}`,borderRadius:10,padding:"10px 20px",fontSize:13,fontWeight:500,boxShadow:"0 8px 25px rgba(0,0,0,0.4)",zIndex:100,whiteSpace:"nowrap"}}>{toast.msg}</div>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+  </script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js');
+    }
+  </script>
+</body>
+</html>
